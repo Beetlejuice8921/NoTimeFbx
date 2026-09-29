@@ -1,81 +1,80 @@
 <img src="icon.png" width="185" alt="NoTime Fbx">
 
+**English** | [Русский](README.ru.md)
+
 # NoTime Fbx
 
-Очень быстрый просмотрщик FBX для Windows. Двойной щелчок по `.fbx` — и модель на экране
-примерно через 10–20 мс; её можно только вращать и приближать, больше ничего.
+A very fast FBX viewer for Windows. Double-click an `.fbx` and the model is on screen in about
+10–20 ms. You can rotate it and zoom, and that's all it does.
 
-*A very fast, minimal FBX viewer for Windows: opens a typical model in ~10–20 ms. Rotate and zoom, nothing else.*
+> Powered by **WARP**. Yes, like the warp drive: while other programs crawl towards your model at
+> sublight speed, NoTime Fbx simply bends space-time, and the model is already there.
+> *(The boring truth: WARP is Microsoft's software Direct3D, which doesn't have to wait for the GPU driver.)*
 
-> Работает на **WARP**. Да, как варп-двигатель: пока другие программы добираются до модели на
-> досветовой, NoTime Fbx просто искривляет пространство-время — и модель уже на экране.
-> *(Скучная правда: WARP — это программный Direct3D от Microsoft, которому не нужно ждать драйвер видеокарты.)*
+## Speed
 
-## Скорость
+![Average time to open, seconds](docs/benchmark.png)
 
-![Среднее время открытия, секунды](docs/benchmark.png)
+Average time from launching the program to the model on screen, in seconds, over five models from
+1k to 2.4M triangles (Windows 10, RTX 4060). FBX Review could not open the heaviest model, so its
+average is over the other four.
 
-Среднее время от запуска программы до модели на экране, в секундах, по пяти моделям от 1 тыс. до
-2,4 млн треугольников (Windows 10, RTX 4060). FBX Review не открыл самую тяжёлую модель — его среднее
-посчитано по четырём.
+## Install
 
-## Установка
+Download `NoTimeFbx-setup.exe` from [Releases](../../releases) and run it. It installs for the
+current user (no admin rights needed) into `%LOCALAPPDATA%\Programs\NoTimeFbx`, adds a Start menu
+shortcut and offers to open `.fbx` files with it. Uninstall from Settings → Apps.
 
-Скачайте `NoTimeFbx-setup.exe` со страницы [Releases](../../releases) и запустите. Программа
-ставится для текущего пользователя (права администратора не нужны) в `%LOCALAPPDATA%\Programs\NoTimeFbx`,
-добавляет ярлык в «Пуск» и предлагает открывать ею файлы `.fbx`. Удаление — через
-«Параметры → Приложения».
+`NoTimeFbx-setup.exe` is the program itself: rename it to `NoTimeFbx.exe` and it runs as a plain
+viewer without installing.
 
-`NoTimeFbx-setup.exe` — это сама программа: если переименовать его в `NoTimeFbx.exe`, он работает
-как обычный просмотрщик без установки.
+## Controls
 
-## Управление
-
-| Действие | Как |
+| Action | How |
 |---|---|
-| Вращать | левая кнопка мыши |
-| Приблизить / отдалить | колесо |
-| Открыть другой файл | перетащить `.fbx` в окно |
-| Закрыть | Esc |
+| Rotate | left mouse button |
+| Zoom | mouse wheel |
+| Open another file | drop an `.fbx` onto the window |
+| Close | Esc |
 
-## Что внутри
+## Under the hood
 
-- **Быстрый старт.** Лёгкие модели (до ~150 тыс. треугольников) рисуются через WARP — программный
-  Direct3D 11 от Microsoft, который готов за ~5 мс вместо ~140 мс на загрузку драйвера видеокарты.
-  Тяжёлые модели сразу идут на видеокарту; если WARP не успевает (большое окно, медленный CPU),
-  модель переезжает на видеокарту на лету.
-- **Параллельная загрузка.** Файл разбирается ([ufbx](https://github.com/ufbx/ufbx)) на всех ядрах,
-  пока создаются окно и Direct3D.
-- **Кэш.** Модели от 8 МБ после первого открытия сохраняются в готовом виде
-  (`%LOCALAPPDATA%\NoTimeFbx\cache`, не больше 2 ГБ) — повторное открытие без разбора FBX.
-- **Текстуры** подгружаются после первого кадра: PNG, JPEG, TIFF, BMP, DDS, TGA; вырезы (листва,
-  сетки) определяются автоматически.
-- Бинарные и ASCII FBX, в том числе файлы из «kn5 converter» (Assetto Corsa).
+- **Fast start.** Light models (up to ~150k triangles) are drawn with WARP, Microsoft's software
+  Direct3D 11, which is ready in ~5 ms instead of the ~140 ms it takes to load the GPU driver.
+  Heavy models go straight to the GPU; if WARP can't keep up (big window, slow CPU), the model
+  moves to the GPU on the fly.
+- **Parallel loading.** The file is parsed ([ufbx](https://github.com/ufbx/ufbx)) on all cores
+  while the window and Direct3D are being created.
+- **Cache.** Models of 8 MB and up are stored ready to draw after the first open
+  (`%LOCALAPPDATA%\NoTimeFbx\cache`, at most 2 GB), so reopening them skips FBX parsing.
+- **Textures** stream in after the first frame: PNG, JPEG, TIFF, BMP, DDS, TGA; cut-outs (foliage,
+  fences) are detected automatically.
+- Binary and ASCII FBX, including files from "kn5 converter" (Assetto Corsa).
 
-## Сборка
+## Building
 
-Нужны MSVC (Visual Studio 2022 или новее, компонент «Разработка классических приложений на C++»)
-и Windows SDK 10.0.22621 или новее. Затем:
+You need MSVC (Visual Studio 2022 or newer with "Desktop development with C++") and Windows SDK
+10.0.22621 or newer. Then:
 
 ```
-build.bat          :: релиз: build\NoTimeFbx.exe и build\NoTimeFbx-setup.exe
-build.bat debug    :: отладочная сборка
+build.bat          :: release: build\NoTimeFbx.exe and build\NoTimeFbx-setup.exe
+build.bat debug    :: debug build
 ```
 
-Иконка собирается из `icon.png`: `powershell -ExecutionPolicy Bypass -File res\make_icon.ps1`.
+The icon is built from `icon.png`: `powershell -ExecutionPolicy Bypass -File res\make_icon.ps1`.
 
-### Переменные окружения для диагностики
+### Diagnostic environment variables
 
-| Переменная | Что делает |
+| Variable | Effect |
 |---|---|
-| `NOTIMEFBX_TIMING=1` | время запуска по этапам в заголовке окна |
-| `NOTIMEFBX_LOG=1` | лог в `%TEMP%\NoTimeFbx.log` (материалы, текстуры, выбор рендерера) |
-| `NOTIMEFBX_NOCACHE=1` | не использовать кэш |
-| `NOTIMEFBX_RENDERER=gpu\|warp` | принудительно выбрать рендерер |
-| `NOTIMEFBX_WARP_MAX_TRIS=N` | порог треугольников для WARP (по умолчанию 150000) |
+| `NOTIMEFBX_TIMING=1` | startup timings per stage in the window title |
+| `NOTIMEFBX_LOG=1` | log to `%TEMP%\NoTimeFbx.log` (materials, textures, renderer choice) |
+| `NOTIMEFBX_NOCACHE=1` | don't use the cache |
+| `NOTIMEFBX_RENDERER=gpu\|warp` | force the renderer |
+| `NOTIMEFBX_WARP_MAX_TRIS=N` | triangle threshold for WARP (default 150000) |
 
-## Лицензия
+## License
 
-MIT, см. [LICENSE](LICENSE). Включённая библиотека [ufbx](https://github.com/ufbx/ufbx) — под своей
-лицензией (MIT / Public Domain, `third_party/ufbx/LICENSE`), с небольшой правкой, описанной в
+MIT, see [LICENSE](LICENSE). The bundled [ufbx](https://github.com/ufbx/ufbx) library keeps its own
+license (MIT / Public Domain, `third_party/ufbx/LICENSE`), with a small change described in
 `third_party/ufbx/PATCHES.txt`.
