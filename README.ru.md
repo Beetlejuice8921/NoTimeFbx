@@ -15,8 +15,8 @@
 
 <table>
   <tr>
-    <td><img src="docs/benchmark.png" width="390" alt="Среднее время открытия, секунды"></td>
-    <td align="center"><img src="docs/notimefbx.gif" width="390" alt="NoTime Fbx"><br><sub><i>Это единственное, с чем я могу сравнить</i></sub></td>
+    <td width="50%" align="center"><img src="docs/benchmark.png" width="380" alt="Среднее время открытия, секунды"></td>
+    <td width="50%" align="center"><img src="docs/notimefbx.gif" width="380" alt="NoTime Fbx"><br><sub><i>Это единственное, с чем я могу сравнить</i></sub></td>
   </tr>
 </table>
 
