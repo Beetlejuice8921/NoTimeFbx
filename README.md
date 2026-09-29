@@ -13,7 +13,12 @@ A very fast FBX viewer for Windows. Double-click an `.fbx` and the model is on s
 
 ## Speed
 
-![Average time to open, seconds](docs/benchmark.png)
+<table>
+  <tr>
+    <td><img src="docs/benchmark.png" width="560" alt="Average time to open, seconds"></td>
+    <td align="center"><img src="docs/notimefbx.gif" width="260" alt="NoTime Fbx"><br><sub><i>The only thing I can compare it to</i></sub></td>
+  </tr>
+</table>
 
 Average time from launching the program to the model on screen, in seconds, over five models from
 1k to 2.4M triangles (Windows 10, RTX 4060). FBX Review could not open the heaviest model, so its

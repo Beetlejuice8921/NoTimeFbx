@@ -13,7 +13,12 @@
 
 ## Скорость
 
-![Среднее время открытия, секунды](docs/benchmark.png)
+<table>
+  <tr>
+    <td><img src="docs/benchmark.png" width="560" alt="Среднее время открытия, секунды"></td>
+    <td align="center"><img src="docs/notimefbx.gif" width="260" alt="NoTime Fbx"><br><sub><i>Это единственное, с чем я могу сравнить</i></sub></td>
+  </tr>
+</table>
 
 Среднее время от запуска программы до модели на экране, в секундах, по пяти моделям от 1 тыс. до
 2,4 млн треугольников (Windows 10, RTX 4060). FBX Review не открыл самую тяжёлую модель — его среднее
