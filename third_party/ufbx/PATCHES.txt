@@ -1,0 +1,5 @@
+ufbx v0.23.1 (https://github.com/ufbx/ufbx), with local changes. Search ufbx.c for "NoTimeFbx patch".
+
+1. ufbxi_ascii_parse_node: the "a:" prefix inside ASCII arrays ("Name: *N { a: 1,2,3 }") is optional.
+   "kn5 converter by Chipicao" (Assetto Corsa model converter) writes arrays without it, and ufbx
+   rejected every such file with "Failed to load".

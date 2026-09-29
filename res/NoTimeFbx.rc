@@ -1,0 +1,27 @@
+// Resource ID 1 is the first icon: used for the window, the .exe and (via "exe,0") .fbx files.
+1 ICON "NoTimeFbx.ico"
+
+// Version info: Windows shows FileDescription as the program name (Task Manager, "Open with").
+1 VERSIONINFO
+FILEVERSION     1,0,0,0
+PRODUCTVERSION  1,0,0,0
+FILEOS          0x40004
+FILETYPE        0x1
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "FileDescription",  "NoTime Fbx"
+            VALUE "ProductName",      "NoTime Fbx"
+            VALUE "FileVersion",      "1.0"
+            VALUE "ProductVersion",   "1.0"
+            VALUE "InternalName",     "NoTimeFbx"
+            VALUE "OriginalFilename", "NoTimeFbx.exe"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
