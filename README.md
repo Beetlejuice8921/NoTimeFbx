@@ -15,8 +15,8 @@ A very fast FBX viewer for Windows. Double-click an `.fbx` and the model is on s
 
 <table>
   <tr>
-    <td><img src="docs/benchmark.png" width="560" alt="Average time to open, seconds"></td>
-    <td align="center"><img src="docs/notimefbx.gif" width="260" alt="NoTime Fbx"><br><sub><i>The only thing I can compare it to</i></sub></td>
+    <td><img src="docs/benchmark.png" width="390" alt="Average time to open, seconds"></td>
+    <td align="center"><img src="docs/notimefbx.gif" width="390" alt="NoTime Fbx"><br><sub><i>The only thing I can compare it to</i></sub></td>
   </tr>
 </table>
 
