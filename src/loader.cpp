@@ -145,6 +145,12 @@ double now_ms()
     return t.QuadPart * 1000.0 / f.QuadPart;
 }
 
+bool is_model_path(const wchar_t* path)
+{
+    const wchar_t* ext = wcsrchr(path, L'.');
+    return ext && (!_wcsicmp(ext, L".fbx") || !_wcsicmp(ext, L".stl"));
+}
+
 bool load_mesh(const wchar_t* path, Mesh& mesh)
 {
     double t0 = now_ms();
@@ -162,7 +168,6 @@ bool load_mesh(const wchar_t* path, Mesh& mesh)
 
     const wchar_t* ext = wcsrchr(path, L'.');
     if (ext && !_wcsicmp(ext, L".stl")) return load_stl(file.data, file.size, mesh);
-
     ufbx_load_opts opts = {};
     opts.ignore_animation = true;
     opts.load_external_files = false;

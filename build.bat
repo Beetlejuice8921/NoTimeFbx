@@ -26,6 +26,8 @@ set UFBX_DEFS=/DUFBX_MINIMAL /DUFBX_ENABLE_TRIANGULATION /DUFBX_REAL_IS_FLOAT
 
 fxc /nologo /T vs_5_0 /E vs_main /O3 /Vn g_vs_main /Fh build\shaders_vs.h src\shaders.hlsl || exit /b 1
 fxc /nologo /T ps_5_0 /E ps_main /O3 /Vn g_ps_main /Fh build\shaders_ps.h src\shaders.hlsl || exit /b 1
+fxc /nologo /T vs_5_0 /E ui_vs_main /O3 /Vn g_ui_vs_main /Fh build\shaders_ui_vs.h src\shaders.hlsl || exit /b 1
+fxc /nologo /T ps_5_0 /E ui_ps_main /O3 /Vn g_ui_ps_main /Fh build\shaders_ui_ps.h src\shaders.hlsl || exit /b 1
 
 rc /nologo /fo build\NoTimeFbx.res res\NoTimeFbx.rc || exit /b 1
 

@@ -76,6 +76,9 @@ struct Mesh
     bool fromCache = false;
 };
 
+// loader.cpp. True for the file extensions the viewer opens (.fbx, .stl).
+bool is_model_path(const wchar_t* path);
+
 // loader.cpp. Safe to call from any thread. STL files are parsed by stl.cpp.
 bool load_mesh(const wchar_t* path, Mesh& mesh);
 

@@ -40,8 +40,12 @@ viewer without installing.
 |---|---|
 | Rotate | left mouse button |
 | Zoom | mouse wheel |
-| Open another file | drop an `.fbx` or `.stl` onto the window |
+| Open another file | drop an `.fbx` or `.stl` onto the window, click a preview in the right panel, or press W A S D / arrow keys |
+| Scroll the file list | mouse wheel over the panel |
 | Close | Esc |
+
+Other models in the open file's folder appear as previews in the panel on the right; clicking one
+(or flipping to it with the keyboard) opens it.
 
 ## Under the hood
 
@@ -58,6 +62,9 @@ viewer without installing.
 - Binary and ASCII FBX, including files from "kn5 converter" (Assetto Corsa).
 - Binary and ASCII STL: flat facet normals, one gray material; Z-up files are stood upright to
   match the viewer's Y-up.
+- **Folder list.** The other models in the open file's folder are listed on the right with
+  rendered thumbnails. Loading happens one file at a time on a background thread, so it never
+  delays the model you opened; heavy files are queued last.
 
 ## Building
 

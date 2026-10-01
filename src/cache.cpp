@@ -233,7 +233,9 @@ void cache_store(const wchar_t* path, const Mesh& mesh)
     std::wstring dir = cache_dir();
     SHCreateDirectoryExW(nullptr, dir.c_str(), nullptr);
 
-    std::wstring tmp = name + L".tmp";
+    // The thread id keeps concurrent writers apart: a preview job and the main open of the same
+    // file can both finish on different threads at the same time.
+    std::wstring tmp = name + L".tmp" + std::to_wstring(GetCurrentThreadId());
     {
         File f;
         f.h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
