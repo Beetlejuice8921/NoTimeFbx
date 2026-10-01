@@ -1,4 +1,4 @@
-// NoTimeFbx: minimal, fast-starting FBX viewer. Rotate with LMB, zoom with wheel, Esc to quit.
+// NoTimeFbx: minimal, fast-starting FBX/STL viewer. Rotate with LMB, zoom with wheel, Esc to quit.
 //
 // Environment knobs, for diagnostics: NOTIMEFBX_TIMING=1 shows startup timings in the title,
 // NOTIMEFBX_LOG=1 writes %TEMP%\NoTimeFbx.log, NOTIMEFBX_NOCACHE=1 bypasses the mesh cache,
@@ -16,6 +16,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -153,9 +154,10 @@ static Renderer renderer_override()
     return Renderer::Auto;
 }
 
-// Triangle count guess before loading, to start the right device early. Exact for cached meshes;
-// otherwise from the file size. Bytes per triangle measured on real files: binary 65-130,
-// ASCII 150-400. The low ends are used, so the guess errs on the heavy side.
+// Triangle count guess before loading, to start the right device early. Exact for cached meshes
+// and binary STL; otherwise from the file size. Bytes per triangle measured on real files: FBX
+// binary 65-130, FBX ASCII 150-400, STL ASCII ~250. The low ends are used, so the guess errs on
+// the heavy side.
 static uint64_t estimate_triangles(const wchar_t* path)
 {
     uint64_t tris;
@@ -164,12 +166,17 @@ static uint64_t estimate_triangles(const wchar_t* path)
     HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
     if (f == INVALID_HANDLE_VALUE) return 0;
     LARGE_INTEGER size = {};
-    char head[7] = {};
+    unsigned char head[84] = {};
     DWORD got = 0;
     GetFileSizeEx(f, &size);
     ReadFile(f, head, sizeof(head), &got, nullptr);
     CloseHandle(f);
-    bool binary = got == sizeof(head) && memcmp(head, "Kaydara", 7) == 0;   // "Kaydara FBX Binary"
+    if (got == sizeof(head)) {
+        uint64_t n = head[80] | (uint64_t)head[81] << 8 | (uint64_t)head[82] << 16 | (uint64_t)head[83] << 24;
+        if (84 + 50 * n == (uint64_t)size.QuadPart) return n;   // binary STL: exact
+        if (!_strnicmp((const char*)head, "solid", 5)) return (uint64_t)size.QuadPart / 200;   // ASCII STL
+    }
+    bool binary = got >= 7 && !memcmp(head, "Kaydara", 7);   // "Kaydara FBX Binary"
     return (uint64_t)size.QuadPart / (binary ? 60 : 140);
 }
 
@@ -1078,7 +1085,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
         bool reg = !lstrcmpiW(path, L"--register");
         bool ok = reg ? register_association(nullptr) : unregister_association();
         if (!ok) MessageBoxW(nullptr, L"Failed to write file association to the registry.", L"NoTime Fbx", MB_ICONERROR);
-        else if (!reg) MessageBoxW(nullptr, L".fbx association removed.", L"NoTime Fbx", MB_ICONINFORMATION);
+        else if (!reg) MessageBoxW(nullptr, L".fbx/.stl association removed.", L"NoTime Fbx", MB_ICONINFORMATION);
         return ok ? 0 : 1;
     }
 

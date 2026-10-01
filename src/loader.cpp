@@ -49,13 +49,6 @@ struct MappedFile
 
 Vec3 to_vec3(ufbx_vec3 v) { return { (float)v.x, (float)v.y, (float)v.z }; }
 
-// Unit normal -> DXGI_FORMAT_R10G10B10A2_UNORM.
-uint32_t pack_normal(Vec3 n)
-{
-    auto q = [](float x) { return (uint32_t)((x * 0.5f + 0.5f) * 1023.0f + 0.5f) & 1023u; };
-    return q(n.x) | (q(n.y) << 10) | (q(n.z) << 20);
-}
-
 std::wstring widen(const char* s)
 {
     int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, nullptr, 0);
@@ -144,7 +137,7 @@ void debug_log(const wchar_t* fmt, ...)
     ReleaseSRWLockExclusive(&lock);
 }
 
-static double now_ms()
+double now_ms()
 {
     LARGE_INTEGER t, f;
     QueryPerformanceCounter(&t);
@@ -166,6 +159,9 @@ bool load_mesh(const wchar_t* path, Mesh& mesh)
         mesh.error = file.file != INVALID_HANDLE_VALUE && file.size == 0 ? L"empty file" : L"cannot open file";
         return false;
     }
+
+    const wchar_t* ext = wcsrchr(path, L'.');
+    if (ext && !_wcsicmp(ext, L".stl")) return load_stl(file.data, file.size, mesh);
 
     ufbx_load_opts opts = {};
     opts.ignore_animation = true;

@@ -4,8 +4,8 @@
 
 # NoTime Fbx
 
-A very fast FBX viewer for Windows. Double-click an `.fbx` and the model is on screen in about
-10–20 ms. You can rotate it and zoom, and that's all it does.
+A very fast FBX and STL viewer for Windows. Double-click an `.fbx` or `.stl` and the model is on
+screen in about 10–20 ms. You can rotate it and zoom, and that's all it does.
 
 > Powered by **WARP**. Yes, like the warp drive: while other programs crawl towards your model at
 > sublight speed, NoTime Fbx simply bends space-time, and the model is already there.
@@ -28,7 +28,8 @@ average is over the other four.
 
 Download `NoTimeFbx-setup.exe` from [Releases](../../releases) and run it. It installs for the
 current user (no admin rights needed) into `%LOCALAPPDATA%\Programs\NoTimeFbx`, adds a Start menu
-shortcut and offers to open `.fbx` files with it. Uninstall from Settings → Apps.
+shortcut and offers to open `.fbx` files with it; for `.stl`, pick it once via right-click →
+Open with → NoTime Fbx. Uninstall from Settings → Apps.
 
 `NoTimeFbx-setup.exe` is the program itself: rename it to `NoTimeFbx.exe` and it runs as a plain
 viewer without installing.
@@ -39,7 +40,7 @@ viewer without installing.
 |---|---|
 | Rotate | left mouse button |
 | Zoom | mouse wheel |
-| Open another file | drop an `.fbx` onto the window |
+| Open another file | drop an `.fbx` or `.stl` onto the window |
 | Close | Esc |
 
 ## Under the hood
@@ -55,6 +56,8 @@ viewer without installing.
 - **Textures** stream in after the first frame: PNG, JPEG, TIFF, BMP, DDS, TGA; cut-outs (foliage,
   fences) are detected automatically.
 - Binary and ASCII FBX, including files from "kn5 converter" (Assetto Corsa).
+- Binary and ASCII STL: flat facet normals, one gray material; Z-up files are stood upright to
+  match the viewer's Y-up.
 
 ## Building
 
