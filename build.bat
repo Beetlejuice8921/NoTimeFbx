@@ -44,7 +44,7 @@ copy /y build\ufbx_%CFG%.flags.new build\ufbx_%CFG%.flags >nul
 :ufbx_done
 
 cl /nologo /utf-8 /std:c++20 /W4 /EHsc /DUNICODE /D_UNICODE %OPT% %UFBX_DEFS% /Ibuild /Ithird_party\ufbx ^
-    src\main.cpp src\assoc.cpp src\loader.cpp src\texture.cpp src\cache.cpp src\install.cpp ^
+    src\main.cpp src\assoc.cpp src\loader.cpp src\stl.cpp src\texture.cpp src\cache.cpp src\install.cpp ^
     build\ufbx_%CFG%.obj build\NoTimeFbx.res ^
     /Fobuild\ /Fdbuild\ /Febuild\NoTimeFbx.exe /link %LFLAGS% || exit /b 1
 rem The installer is the same program under another name (see src\install.cpp).

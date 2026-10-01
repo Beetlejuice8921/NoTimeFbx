@@ -22,6 +22,13 @@ struct Vertex
     float    u, v;
 };
 
+// Unit normal -> DXGI_FORMAT_R10G10B10A2_UNORM.
+inline uint32_t pack_normal(Vec3 n)
+{
+    auto q = [](float x) { return (uint32_t)((x * 0.5f + 0.5f) * 1023.0f + 0.5f) & 1023u; };
+    return q(n.x) | (q(n.y) << 10) | (q(n.z) << 20);
+}
+
 // Heap array whose resize() leaves elements uninitialized: no pointless zeroing of 100+ MB.
 template <class T> struct Array
 {
@@ -69,8 +76,12 @@ struct Mesh
     bool fromCache = false;
 };
 
-// loader.cpp. Safe to call from any thread.
+// loader.cpp. Safe to call from any thread. STL files are parsed by stl.cpp.
 bool load_mesh(const wchar_t* path, Mesh& mesh);
+
+// stl.cpp. Binary or ASCII STL -> the same flat triangle list (no materials or textures, facet
+// normals, Z-up data rotated upright). `data` holds the whole file. Safe to call from any thread.
+bool load_stl(const void* data, size_t size, Mesh& mesh);
 
 // cache.cpp. cache_load() is used by load_mesh(); cache_store() is slow (writes the whole mesh to
 // disk) and is meant for a background thread once the model is displayed. Both are thread-safe.
@@ -81,3 +92,6 @@ bool cache_peek(const wchar_t* path, uint64_t& triangles);
 
 // Diagnostics: appends a line to %TEMP%\NoTimeFbx.log when NOTIMEFBX_LOG is set. Thread-safe.
 void debug_log(const wchar_t* fmt, ...);
+
+// Diagnostics: milliseconds since an arbitrary start, for load/parse timings. Thread-safe.
+double now_ms();

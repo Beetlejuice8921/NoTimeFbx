@@ -1,8 +1,9 @@
-// .fbx file association (per-user, no admin rights needed).
+// .fbx and .stl file associations (per-user, no admin rights needed).
 //
 // Windows 10+ does not allow an app to silently make itself the default handler (UserChoice is
 // hash-protected), so --register writes the ProgID/capabilities and then shows the system
-// "How do you want to open .fbx files?" dialog where the user confirms the choice once.
+// "How do you want to open .fbx files?" dialog where the user confirms the choice once. The other
+// formats are offered in "Open with" and Settings > Default apps, where they can be picked too.
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -10,12 +11,24 @@
 #include <shellapi.h>
 #include <shlobj.h>
 
+#include <string>
+
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "shell32.lib")
 
-static const wchar_t kProgId[]   = L"NoTimeFbx.fbx";
 static const wchar_t kAppKey[]   = L"Software\\NoTimeFbx";
 static const wchar_t kCapsPath[] = L"Software\\NoTimeFbx\\Capabilities";
+
+// The formats the viewer opens, with their per-format registry ProgIDs.
+static const struct
+{
+    const wchar_t* ext;
+    const wchar_t* progId;
+    const wchar_t* desc;
+} kFormats[] = {
+    { L".fbx", L"NoTimeFbx.fbx", L"FBX model" },
+    { L".stl", L"NoTimeFbx.stl", L"STL model" },
+};
 
 static bool set_value(const wchar_t* subkey, const wchar_t* name, const wchar_t* data, DWORD type = REG_SZ)
 {
@@ -28,7 +41,7 @@ static bool set_value(const wchar_t* subkey, const wchar_t* name, const wchar_t*
     return st == ERROR_SUCCESS;
 }
 
-// Registers `exePath` (the running executable when null) as a handler for .fbx.
+// Registers `exePath` (the running executable when null) as a handler for all supported formats.
 bool register_association(const wchar_t* exePath)
 {
     wchar_t exe[MAX_PATH];
@@ -39,26 +52,30 @@ bool register_association(const wchar_t* exePath)
     wsprintfW(cmd, L"\"%s\" \"%%1\"", exe);
     wsprintfW(icon, L"\"%s\",0", exe);
 
+    std::wstring classes = L"Software\\Classes\\";
     bool ok = true;
-    // ProgID
-    ok &= set_value(L"Software\\Classes\\NoTimeFbx.fbx", nullptr, L"FBX model");
-    ok &= set_value(L"Software\\Classes\\NoTimeFbx.fbx\\DefaultIcon", nullptr, icon);
-    ok &= set_value(L"Software\\Classes\\NoTimeFbx.fbx\\shell\\open\\command", nullptr, cmd);
-    // Offer it for .fbx in "Open with"
-    ok &= set_value(L"Software\\Classes\\.fbx\\OpenWithProgids", kProgId, nullptr, REG_NONE);
+    for (const auto& fmt : kFormats) {
+        // ProgID
+        ok &= set_value((classes + fmt.progId).c_str(), nullptr, fmt.desc);
+        ok &= set_value((classes + fmt.progId + L"\\DefaultIcon").c_str(), nullptr, icon);
+        ok &= set_value((classes + fmt.progId + L"\\shell\\open\\command").c_str(), nullptr, cmd);
+        // Offer it for the extension in "Open with"
+        ok &= set_value((classes + fmt.ext + L"\\OpenWithProgids").c_str(), fmt.progId, nullptr, REG_NONE);
+        ok &= set_value(L"Software\\NoTimeFbx\\Capabilities\\FileAssociations", fmt.ext, fmt.progId);
+    }
     ok &= set_value(L"Software\\Classes\\Applications\\NoTimeFbx.exe", L"FriendlyAppName", L"NoTime Fbx");
-    ok &= set_value(L"Software\\Classes\\Applications\\NoTimeFbx.exe\\SupportedTypes", L".fbx", L"");
+    for (const auto& fmt : kFormats)
+        ok &= set_value(L"Software\\Classes\\Applications\\NoTimeFbx.exe\\SupportedTypes", fmt.ext, L"");
     ok &= set_value(L"Software\\Classes\\Applications\\NoTimeFbx.exe\\shell\\open\\command", nullptr, cmd);
     // Show up in Settings > Default apps
     ok &= set_value(kCapsPath, L"ApplicationName", L"NoTime Fbx");
-    ok &= set_value(kCapsPath, L"ApplicationDescription", L"Fast FBX model viewer");
-    ok &= set_value(L"Software\\NoTimeFbx\\Capabilities\\FileAssociations", L".fbx", kProgId);
+    ok &= set_value(kCapsPath, L"ApplicationDescription", L"Fast FBX and STL model viewer");
     ok &= set_value(L"Software\\RegisteredApplications", L"NoTimeFbx", kCapsPath);
 
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
     if (!ok) return false;
 
-    // Let the user pick NoTimeFbx as the default ("Always use this app").
+    // Let the user pick NoTimeFbx as the default for the primary format ("Always use this app").
     OPENASINFO info = {};
     info.pcszFile = L"model.fbx";
     info.oaifInFlags = OAIF_REGISTER_EXT | OAIF_FORCE_REGISTRATION;
@@ -69,10 +86,13 @@ bool register_association(const wchar_t* exePath)
 
 bool unregister_association()
 {
-    RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\Classes\\NoTimeFbx.fbx");
+    std::wstring classes = L"Software\\Classes\\";
+    for (const auto& fmt : kFormats) {
+        RegDeleteTreeW(HKEY_CURRENT_USER, (classes + fmt.progId).c_str());
+        RegDeleteKeyValueW(HKEY_CURRENT_USER, (classes + fmt.ext + L"\\OpenWithProgids").c_str(), fmt.progId);
+    }
     RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\Classes\\Applications\\NoTimeFbx.exe");
     RegDeleteTreeW(HKEY_CURRENT_USER, kAppKey);
-    RegDeleteKeyValueW(HKEY_CURRENT_USER, L"Software\\Classes\\.fbx\\OpenWithProgids", kProgId);
     RegDeleteKeyValueW(HKEY_CURRENT_USER, L"Software\\RegisteredApplications", L"NoTimeFbx");
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
     return true;

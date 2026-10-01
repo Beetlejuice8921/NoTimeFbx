@@ -1,7 +1,7 @@
 // Self-installer. The same executable, named NoTimeFbx-setup.exe (or run with --install), copies
-// itself to %LOCALAPPDATA%\Programs\NoTimeFbx, adds a Start menu shortcut, the .fbx association
-// and an entry in Settings > Apps; --uninstall (what that entry runs) removes all of it, including
-// the mesh cache. Per-user only: no admin rights needed.
+// itself to %LOCALAPPDATA%\Programs\NoTimeFbx, adds a Start menu shortcut, the .fbx/.stl file
+// associations and an entry in Settings > Apps; --uninstall (what that entry runs) removes all of
+// it, including the mesh cache. Per-user only: no admin rights needed.
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -125,7 +125,7 @@ int run_install()
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     std::wstring dir = install_dir(), exe = installed_exe();
     std::wstring prompt = L"Установить NoTime Fbx в\n" + dir +
-                          L"?\n\nБудут добавлены ярлык в меню «Пуск» и открытие файлов .fbx. "
+                          L"?\n\nБудут добавлены ярлык в меню «Пуск» и открытие файлов .fbx и .stl. "
                           L"Права администратора не нужны.";
     if (MessageBoxW(nullptr, prompt.c_str(), kTitle, MB_OKCANCEL | MB_ICONQUESTION) != IDOK) return 1;
 
