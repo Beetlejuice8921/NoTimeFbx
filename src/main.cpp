@@ -499,8 +499,11 @@ static float g_listScroll = 0;       // list pixels scrolled off the top
 static uint32_t g_openGeneration;    // bumps on every open: stale load results are dropped
 static uint32_t g_previewGeneration; // bumps when the list is rebuilt: stale previews are dropped
 
+// The file list appears only when the folder holds models besides the one that is open.
+static bool list_visible() { return g_list.size() > 1; }
+
 // Viewport the 3D model is drawn in: the whole window, minus the file list when it is shown.
-static UINT viewport_width() { return g_list.empty() ? g_width : g_width - kPanelWidth; }
+static UINT viewport_width() { return list_visible() ? g_width - kPanelWidth : g_width; }
 
 // Orbit camera
 static const float kFovY = 0.8f;
@@ -1026,7 +1029,7 @@ static void draw_quad(ID3D11DeviceContext* ctx, float x, float y, float w, float
 
 static void draw_ui(ID3D11DeviceContext* ctx)
 {
-    if (g_list.empty()) return;
+    if (!list_visible()) return;
 
     ctx->OMSetDepthStencilState(g_gpu.uiDepth, 0);
     D3D11_VIEWPORT vp = { 0, 0, (float)g_width, (float)g_height, 0, 1 };
@@ -1049,11 +1052,16 @@ static void draw_ui(ID3D11DeviceContext* ctx)
         const ListItem& it = g_list[i];
         float y = 8.0f + (float)i * kItemPitch - g_listScroll;
         if (y + kThumbSize + kThumbLabel < 0 || y > (float)g_height) continue;
-        bool active = _wcsicmp(it.path.c_str(), g_activePath.c_str()) == 0;
-        const float borderTint[4] = { active ? 0.22f : 0.255f, active ? 0.50f : 0.265f,
-                                      active ? 0.92f : 0.295f, 1 };
-        draw_quad(ctx, x0 + 6, y, (float)(kThumbSize + 4), (float)(kThumbSize + kThumbLabel + 4),
-                  0, 0, 0, 0, borderTint);
+        if (_wcsicmp(it.path.c_str(), g_activePath.c_str()) == 0) {
+            // The open file: a wide accent frame around its thumbnail.
+            const float accent[4] = { 0.26f, 0.56f, 1.0f, 1 };
+            draw_quad(ctx, x0 + 4, y - 2, (float)(kThumbSize + 8), (float)(kThumbSize + kThumbLabel + 8),
+                      0, 0, 0, 0, accent);
+        } else {
+            const float borderTint[4] = { 0.255f, 0.265f, 0.295f, 1 };
+            draw_quad(ctx, x0 + 6, y, (float)(kThumbSize + 4), (float)(kThumbSize + kThumbLabel + 4),
+                      0, 0, 0, 0, borderTint);
+        }
         if (it.ready) {
             const float white[4] = { 1, 1, 1, 1 };
             ctx->PSSetShaderResources(0, 1, &it.thumb);
