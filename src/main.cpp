@@ -1,4 +1,4 @@
-// NoTimeFbx: minimal, fast-starting FBX viewer. Rotate with LMB, zoom with wheel, Esc to quit.
+// NoTimeFbx: minimal, fast-starting FBX/STL viewer. Rotate with LMB, zoom with wheel, Esc to quit.
 //
 // Environment knobs, for diagnostics: NOTIMEFBX_TIMING=1 shows startup timings in the title,
 // NOTIMEFBX_LOG=1 writes %TEMP%\NoTimeFbx.log, NOTIMEFBX_NOCACHE=1 bypasses the mesh cache,
@@ -11,11 +11,15 @@
 #include <shellapi.h>
 #include <imm.h>
 #include <d3d11.h>
+#include <d3d11_1.h>
 #include <dxgi1_3.h>
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <cstdio>
+#include <cstring>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -26,6 +30,8 @@
 
 #include "shaders_vs.h"
 #include "shaders_ps.h"
+#include "shaders_ui_vs.h"
+#include "shaders_ui_ps.h"
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -42,6 +48,9 @@ bool unregister_association();
 bool is_setup_exe();                                  // install.cpp
 int  run_install();
 int  run_uninstall();
+
+static void scan_folder(const wchar_t* path);         // builds the file list for a model's folder
+static void open_async(const std::wstring& path);     // loads a file on a worker thread
 
 // ---------------------------------------------------------------------------
 // Math (column-vector convention, column-major storage: m[col * 4 + row])
@@ -153,9 +162,10 @@ static Renderer renderer_override()
     return Renderer::Auto;
 }
 
-// Triangle count guess before loading, to start the right device early. Exact for cached meshes;
-// otherwise from the file size. Bytes per triangle measured on real files: binary 65-130,
-// ASCII 150-400. The low ends are used, so the guess errs on the heavy side.
+// Triangle count guess before loading, to start the right device early. Exact for cached meshes
+// and binary STL; otherwise from the file size. Bytes per triangle measured on real files: FBX
+// binary 65-130, FBX ASCII 150-400, STL ASCII ~250. The low ends are used, so the guess errs on
+// the heavy side.
 static uint64_t estimate_triangles(const wchar_t* path)
 {
     uint64_t tris;
@@ -164,14 +174,27 @@ static uint64_t estimate_triangles(const wchar_t* path)
     HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
     if (f == INVALID_HANDLE_VALUE) return 0;
     LARGE_INTEGER size = {};
-    char head[7] = {};
+    unsigned char head[84] = {};
     DWORD got = 0;
     GetFileSizeEx(f, &size);
     ReadFile(f, head, sizeof(head), &got, nullptr);
     CloseHandle(f);
-    bool binary = got == sizeof(head) && memcmp(head, "Kaydara", 7) == 0;   // "Kaydara FBX Binary"
+    if (got == sizeof(head)) {
+        uint64_t n = head[80] | (uint64_t)head[81] << 8 | (uint64_t)head[82] << 16 | (uint64_t)head[83] << 24;
+        if (84 + 50 * n == (uint64_t)size.QuadPart) return n;   // binary STL: exact
+        if (!_strnicmp((const char*)head, "solid", 5)) return (uint64_t)size.QuadPart / 200;   // ASCII STL
+    }
+    bool binary = got >= 7 && !memcmp(head, "Kaydara", 7);   // "Kaydara FBX Binary"
     return (uint64_t)size.QuadPart / (binary ? 60 : 140);
 }
+
+// ---------------------------------------------------------------------------
+// File list: the right panel lists the other models in the open file's folder
+
+static const int kPanelWidth = 128;    // panel strip on the right
+static const int kThumbSize = 112;     // square 3D preview of a list item
+static const int kThumbLabel = 20;     // filename strip under the preview
+static const int kItemPitch = kThumbSize + kThumbLabel + 6;
 
 // ---------------------------------------------------------------------------
 // Renderer state
@@ -213,12 +236,37 @@ struct Gpu
     ID3D11SamplerState*    sampler = nullptr;
     ID3D11RasterizerState* raster = nullptr;
     ID3D11Query*           frameQuery = nullptr;   // WARP only: measures how long a frame takes
+    // File list: pixel-space quads, plus a reusable render target for thumbnails.
+    ID3D11VertexShader*    uiVs = nullptr;
+    ID3D11PixelShader*     uiPs = nullptr;
+    ID3D11InputLayout*     uiLayout = nullptr;
+    ID3D11Buffer*          uiCB = nullptr;
+    ID3D11Buffer*          uiVb = nullptr;         // one quad, rewritten per quad
+    ID3D11DepthStencilState* uiDepth = nullptr;    // depth test off for UI drawing
+    ID3D11ShaderResourceView* whiteSrv = nullptr;  // 1x1 white: tinted solid quads
+    ID3D11Texture2D*       thumbRt = nullptr;      // 3D previews are rendered here...
+    ID3D11RenderTargetView* thumbRtv = nullptr;
+    ID3D11Texture2D*       thumbDepth = nullptr;
+    ID3D11DepthStencilView* thumbDsv = nullptr;
+    ID3D11Texture2D*       thumbGdi = nullptr;     // ...copied here, GDI adds the filename
     bool                   warp = false;
     double                 readyMs = 0;   // when creation finished, ms since launch (diagnostics)
 };
 
 static void release_gpu(Gpu& g)
 {
+    safe_release(g.thumbGdi);
+    safe_release(g.thumbDsv);
+    safe_release(g.thumbDepth);
+    safe_release(g.thumbRtv);
+    safe_release(g.thumbRt);
+    safe_release(g.whiteSrv);
+    safe_release(g.uiDepth);
+    safe_release(g.uiVb);
+    safe_release(g.uiCB);
+    safe_release(g.uiLayout);
+    safe_release(g.uiPs);
+    safe_release(g.uiVs);
     safe_release(g.frameQuery);
     safe_release(g.raster);
     safe_release(g.sampler);
@@ -236,7 +284,8 @@ static bool create_gpu(bool warp, Gpu& g)
     g = Gpu();
     g.warp = warp;
     D3D_DRIVER_TYPE type = warp ? D3D_DRIVER_TYPE_WARP : D3D_DRIVER_TYPE_HARDWARE;
-    UINT flags = D3D11_CREATE_DEVICE_SINGLETHREADED;
+    // BGRA support is what lets GDI write into the GDI-compatible thumbnail textures.
+    UINT flags = D3D11_CREATE_DEVICE_SINGLETHREADED | D3D11_CREATE_DEVICE_BGRA_SUPPORT;
 #ifdef _DEBUG
     flags |= D3D11_CREATE_DEVICE_DEBUG;
 #endif
@@ -287,8 +336,59 @@ static bool create_gpu(bool warp, Gpu& g)
         g.device->CreateQuery(&qd, &g.frameQuery);
     }
 
+    // File list UI: quads in pixel coordinates, a 1x1 white texture for tinted solids, and the
+    // thumbnail render target with its GDI-compatible copy (preview on top, filename strip below).
+    g.device->CreateVertexShader(g_ui_vs_main, sizeof(g_ui_vs_main), nullptr, &g.uiVs);
+    g.device->CreatePixelShader(g_ui_ps_main, sizeof(g_ui_ps_main), nullptr, &g.uiPs);
+    D3D11_INPUT_ELEMENT_DESC uiLayout[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 8, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+    };
+    g.device->CreateInputLayout(uiLayout, 2, g_ui_vs_main, sizeof(g_ui_vs_main), &g.uiLayout);
+    cd.ByteWidth = 32;   // Ui cbuffer: backbuffer size + tint
+    g.device->CreateBuffer(&cd, nullptr, &g.uiCB);
+    D3D11_BUFFER_DESC vd = {};
+    vd.ByteWidth = 64;   // one quad: 4 vertices x (x, y, u, v)
+    vd.Usage = D3D11_USAGE_DYNAMIC;
+    vd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+    vd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    g.device->CreateBuffer(&vd, nullptr, &g.uiVb);
+    D3D11_DEPTH_STENCIL_DESC dd = {};
+    dd.DepthEnable = FALSE;
+    g.device->CreateDepthStencilState(&dd, &g.uiDepth);
+    uint32_t whitePixel = 0xffffffffu;
+    D3D11_TEXTURE2D_DESC td = { 1, 1, 1, 1, DXGI_FORMAT_B8G8R8A8_UNORM, { 1, 0 }, D3D11_USAGE_IMMUTABLE,
+                                D3D11_BIND_SHADER_RESOURCE, 0, 0 };
+    D3D11_SUBRESOURCE_DATA whiteInit = { &whitePixel, 4, 0 };
+    {
+        ID3D11Texture2D* white = nullptr;
+        if (SUCCEEDED(g.device->CreateTexture2D(&td, &whiteInit, &white))) {
+            g.device->CreateShaderResourceView(white, nullptr, &g.whiteSrv);
+            white->Release();
+        }
+    }
+    td.Usage = D3D11_USAGE_DEFAULT;
+    td.Width = kThumbSize;
+    td.Height = kThumbSize;
+    td.BindFlags = D3D11_BIND_RENDER_TARGET;
+    g.device->CreateTexture2D(&td, nullptr, &g.thumbRt);
+    if (g.thumbRt) g.device->CreateRenderTargetView(g.thumbRt, nullptr, &g.thumbRtv);
+    td.Format = DXGI_FORMAT_D32_FLOAT;
+    td.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+    g.device->CreateTexture2D(&td, nullptr, &g.thumbDepth);
+    if (g.thumbDepth) g.device->CreateDepthStencilView(g.thumbDepth, nullptr, &g.thumbDsv);
+    td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    td.Height = kThumbSize + kThumbLabel;
+    // GetDC on a surface requires the GDI_COMPATIBLE flag and a render-target bind flag.
+    td.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    td.MiscFlags = D3D11_RESOURCE_MISC_GDI_COMPATIBLE;
+    g.device->CreateTexture2D(&td, nullptr, &g.thumbGdi);
+
     g.readyMs = ms_since_start();
-    if (g.vs && g.ps && g.layout && g.frameCB && g.materialCB && g.sampler && g.raster) return true;
+    if (g.vs && g.ps && g.layout && g.frameCB && g.materialCB && g.sampler && g.raster && g.uiVs &&
+        g.uiPs && g.uiLayout && g.uiCB && g.uiVb && g.uiDepth && g.whiteSrv && g.thumbRtv &&
+        g.thumbDsv && g.thumbGdi)
+        return true;
     release_gpu(g);
     return false;
 }
@@ -382,6 +482,28 @@ static std::vector<GpuMaterial>               g_materials;
 static std::vector<ID3D11ShaderResourceView*> g_textures;
 static std::vector<bool>                      g_textureCutout;
 static uint32_t                               g_textureGeneration;   // bumps on every new model
+
+// Other models in the open file's folder, shown as previews in the right panel.
+struct ListItem
+{
+    std::wstring path;   // full path to the model file
+    std::wstring name;   // file name, drawn under the preview
+    uint64_t     bytes = 0;
+    bool         ready = false;
+    ID3D11ShaderResourceView* thumb = nullptr;   // preview + filename, on the active device
+};
+static std::vector<ListItem> g_list;
+static std::wstring g_listDir;       // folder the list was built from, with the trailing slash
+static std::wstring g_activePath;    // the file the viewer shows (or is loading)
+static float g_listScroll = 0;       // list pixels scrolled off the top
+static uint32_t g_openGeneration;    // bumps on every open: stale load results are dropped
+static uint32_t g_previewGeneration; // bumps when the list is rebuilt: stale previews are dropped
+
+// The file list appears only when the folder holds models besides the one that is open.
+static bool list_visible() { return g_list.size() > 1; }
+
+// Viewport the 3D model is drawn in: the whole window, minus the file list when it is shown.
+static UINT viewport_width() { return list_visible() ? g_width - kPanelWidth : g_width; }
 
 // Orbit camera
 static const float kFovY = 0.8f;
@@ -568,6 +690,13 @@ static void switch_to(Gpu& gpu)
     ID3D11Buffer* ib = copy_buffer(g_ib, gpu.device);
     std::vector<ID3D11ShaderResourceView*> textures(g_textures.size(), nullptr);
     for (size_t i = 0; i < textures.size(); ++i) textures[i] = copy_texture(g_textures[i], gpu.device);
+    // Thumbnails too: the list stays usable across the switch (each is tiny, copying is instant).
+    for (ListItem& it : g_list)
+        if (it.thumb) {
+            ID3D11ShaderResourceView* t = copy_texture(it.thumb, gpu.device);
+            safe_release(it.thumb);
+            it.thumb = t;
+        }
     if ((g_vb && !vb) || (g_ib && !ib)) {   // could not move the model: stay where we are
         safe_release(vb);
         safe_release(ib);
@@ -660,7 +789,7 @@ static void fit_camera()
     Vec3 right = normalize(cross({ 0, 1, 0 }, d));
     Vec3 up = cross(d, right);
     float tanV = std::tan(kFovY * 0.5f);
-    float tanH = tanV * (g_height ? (float)g_width / g_height : 1.6f);
+    float tanH = tanV * (g_height ? (float)viewport_width() / g_height : 1.6f);
     float dist = 0;
     for (int i = 0; i < 8; ++i) {
         Vec3 c = { (i & 1) ? g_bmax.x : g_bmin.x, (i & 2) ? g_bmax.y : g_bmin.y, (i & 4) ? g_bmax.z : g_bmin.z };
@@ -696,6 +825,9 @@ static void draw_scene(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* dsv,
     ctx->ClearRenderTargetView(rtv, clear);
     ctx->ClearDepthStencilView(dsv, D3D11_CLEAR_DEPTH, 1.0f, 0);
     ctx->OMSetRenderTargets(1, &rtv, dsv);
+    // The file-list pass disables depth testing; restore the default or far triangles would draw
+    // over near ones in file order.
+    ctx->OMSetDepthStencilState(nullptr, 0);
 
     D3D11_VIEWPORT vp = { 0, 0, (float)width, (float)height, 0, 1 };
     ctx->RSSetViewports(1, &vp);
@@ -730,6 +862,220 @@ static void draw_scene(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* dsv,
             ctx->DrawIndexed(d.indexCount, d.firstIndex, 0);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// File list: thumbnails, panel drawing, selection
+
+static void clamp_scroll()
+{
+    float content = 8.0f + (float)g_list.size() * kItemPitch + 8.0f;
+    g_listScroll = std::fmax(0.0f, std::fmin(g_listScroll, std::fmax(0.0f, content - g_height)));
+}
+
+static void scroll_into_view(size_t i)
+{
+    float top = 8.0f + (float)i * kItemPitch;
+    g_listScroll = std::fmin(g_listScroll, top - 8.0f);
+    g_listScroll = std::fmax(g_listScroll, top + kThumbSize + kThumbLabel - (float)g_height + 8.0f);
+    clamp_scroll();
+}
+
+// Renders one list item's preview: the model into the shared render target, the filename under it
+// via GDI, and keeps the result as the item's texture. Runs on the UI thread, like all drawing.
+static void render_thumbnail(ListItem& it, const Mesh& mesh)
+{
+    if (!mesh.vertices.size() || !mesh.indices.size()) return;
+
+    D3D11_BUFFER_DESC bd = {};
+    bd.Usage = D3D11_USAGE_IMMUTABLE;
+    bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+    bd.ByteWidth = (UINT)(mesh.vertices.size() * sizeof(Vertex));
+    D3D11_SUBRESOURCE_DATA init = { mesh.vertices.data() };
+    ID3D11Buffer* vb = nullptr;
+    ID3D11Buffer* ib = nullptr;
+    g_gpu.device->CreateBuffer(&bd, &init, &vb);
+    bd.BindFlags = D3D11_BIND_INDEX_BUFFER;
+    bd.ByteWidth = (UINT)(mesh.indices.size() * sizeof(uint32_t));
+    init.pSysMem = mesh.indices.data();
+    g_gpu.device->CreateBuffer(&bd, &init, &ib);
+    if (!vb || !ib) {
+        safe_release(vb);
+        safe_release(ib);
+        return;
+    }
+
+    // Same framing and headlight as the main view, square aspect.
+    Vec3 target = (mesh.bmin + mesh.bmax) * 0.5f;
+    Vec3 d = view_dir();
+    Vec3 right = normalize(cross({ 0, 1, 0 }, d));
+    Vec3 up = cross(d, right);
+    Vec3 diag = mesh.bmax - mesh.bmin;
+    float radius = std::fmax(std::sqrt(dot(diag, diag)) * 0.5f, 1e-4f);
+    float tanV = std::tan(kFovY * 0.5f);
+    float dist = 0;
+    for (int i = 0; i < 8; ++i) {
+        Vec3 c = { (i & 1) ? mesh.bmax.x : mesh.bmin.x, (i & 2) ? mesh.bmax.y : mesh.bmin.y,
+                   (i & 4) ? mesh.bmax.z : mesh.bmin.z };
+        Vec3 rel = c - target;
+        float z = dot(rel, d);
+        dist = std::fmax(dist, z + std::fabs(dot(rel, right)) / tanV);
+        dist = std::fmax(dist, z + std::fabs(dot(rel, up)) / tanV);
+    }
+    dist = std::fmax(dist * 1.08f, radius * 0.05f);
+
+    ID3D11DeviceContext* ctx = g_gpu.ctx;
+    float zn = std::fmax(dist - radius * 1.5f, dist * 0.01f);
+    float zf = dist + radius * 1.5f;
+    FrameConstants fc;
+    fc.viewProj = mul(perspective_rh(kFovY, 1.0f, zn, zf), look_at_rh(target + d * dist, target, { 0, 1, 0 }));
+    fc.lightDir = normalize(d + Vec3{ 0, 0.5f, 0 });
+    fc.pad = 0;
+    MaterialConstants mc = { { 0.8f, 0.8f, 0.8f }, 0, 0, { 0, 0, 0 } };
+    D3D11_MAPPED_SUBRESOURCE ms;
+    ctx->Map(g_gpu.frameCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms);
+    memcpy(ms.pData, &fc, sizeof(fc));
+    ctx->Unmap(g_gpu.frameCB, 0);
+    ctx->Map(g_gpu.materialCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms);
+    memcpy(ms.pData, &mc, sizeof(mc));
+    ctx->Unmap(g_gpu.materialCB, 0);
+
+    const float clear[4] = { 0.16f, 0.17f, 0.19f, 1.0f };
+    ctx->ClearRenderTargetView(g_gpu.thumbRtv, clear);
+    ctx->ClearDepthStencilView(g_gpu.thumbDsv, D3D11_CLEAR_DEPTH, 1.0f, 0);
+    ctx->OMSetRenderTargets(1, &g_gpu.thumbRtv, g_gpu.thumbDsv);
+    ctx->OMSetDepthStencilState(nullptr, 0);   // draw_ui() may have left depth testing off
+    D3D11_VIEWPORT vp = { 0, 0, (float)kThumbSize, (float)kThumbSize, 0, 1 };
+    ctx->RSSetViewports(1, &vp);
+    ctx->RSSetState(g_gpu.raster);
+    UINT stride = sizeof(Vertex), offs = 0;
+    ctx->IASetInputLayout(g_gpu.layout);
+    ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    ctx->IASetVertexBuffers(0, 1, &vb, &stride, &offs);
+    ctx->IASetIndexBuffer(ib, DXGI_FORMAT_R32_UINT, 0);
+    ctx->VSSetShader(g_gpu.vs, nullptr, 0);
+    ctx->VSSetConstantBuffers(0, 1, &g_gpu.frameCB);
+    ctx->PSSetShader(g_gpu.ps, nullptr, 0);
+    ID3D11Buffer* psBuffers[2] = { g_gpu.frameCB, g_gpu.materialCB };
+    ctx->PSSetConstantBuffers(0, 2, psBuffers);
+    ctx->PSSetSamplers(0, 1, &g_gpu.sampler);
+    ID3D11ShaderResourceView* nullSrv = nullptr;
+    ctx->PSSetShaderResources(0, 1, &nullSrv);
+    // A thumbnail is tiny: draw at most 90k triangles, more cannot be seen anyway.
+    ctx->DrawIndexed((UINT)std::min<size_t>(mesh.indices.size(), 270000) / 3 * 3, 0, 0);
+    ctx->OMSetRenderTargets(0, nullptr, nullptr);
+
+    ctx->CopySubresourceRegion(g_gpu.thumbGdi, 0, 0, 0, 0, g_gpu.thumbRt, 0, nullptr);
+    IDXGISurface1* surf = nullptr;
+    if (SUCCEEDED(g_gpu.thumbGdi->QueryInterface(IID_PPV_ARGS(&surf)))) {
+        HDC dc = nullptr;
+        if (SUCCEEDED(surf->GetDC(FALSE, &dc))) {
+            static const HBRUSH brush = CreateSolidBrush(RGB(30, 31, 35));
+            RECT rc = { 0, kThumbSize, kThumbSize, kThumbSize + kThumbLabel };
+            FillRect(dc, &rc, brush);
+            static const HFONT font = [] {
+                NONCLIENTMETRICSW ncm = { sizeof(ncm) };
+                SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0);
+                return CreateFontIndirectW(&ncm.lfMessageFont);
+            }();
+            SelectObject(dc, font);
+            SetBkMode(dc, TRANSPARENT);
+            SetTextColor(dc, RGB(219, 220, 222));
+            RECT trc = { 2, kThumbSize, kThumbSize - 2, kThumbSize + kThumbLabel };
+            DrawTextW(dc, it.name.c_str(), -1, &trc,
+                      DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+            surf->ReleaseDC(nullptr);
+        }
+        surf->Release();
+    }
+
+    safe_release(it.thumb);
+    // The shared render target only holds the most recent preview: each item gets its own copy.
+    D3D11_TEXTURE2D_DESC copyDesc = { kThumbSize, kThumbSize + kThumbLabel, 1, 1,
+                                      DXGI_FORMAT_B8G8R8A8_UNORM, { 1, 0 }, D3D11_USAGE_DEFAULT,
+                                      D3D11_BIND_SHADER_RESOURCE, 0, 0 };
+    ID3D11Texture2D* copy = nullptr;
+    if (SUCCEEDED(g_gpu.device->CreateTexture2D(&copyDesc, nullptr, &copy))) {
+        ctx->CopyResource(copy, g_gpu.thumbGdi);
+        g_gpu.device->CreateShaderResourceView(copy, nullptr, &it.thumb);
+        copy->Release();
+    }
+    it.ready = it.thumb != nullptr;
+    safe_release(vb);
+    safe_release(ib);
+}
+
+// One UI quad in pixel coordinates (y down), drawn as a triangle strip.
+static void draw_quad(ID3D11DeviceContext* ctx, float x, float y, float w, float h, float u1, float v1,
+                      float u2, float v2, const float tint[4])
+{
+    struct UiVertex { float x, y, u, v; };
+    const UiVertex verts[4] = {
+        { x,     y,     u1, v1 },
+        { x + w, y,     u2, v1 },
+        { x,     y + h, u1, v2 },
+        { x + w, y + h, u2, v2 },
+    };
+    D3D11_MAPPED_SUBRESOURCE ms;
+    ctx->Map(g_gpu.uiCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms);
+    float data[8] = { (float)g_width, (float)g_height, 0, 0, tint[0], tint[1], tint[2], tint[3] };
+    memcpy(ms.pData, data, sizeof(data));
+    ctx->Unmap(g_gpu.uiCB, 0);
+    ctx->Map(g_gpu.uiVb, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms);
+    memcpy(ms.pData, verts, sizeof(verts));
+    ctx->Unmap(g_gpu.uiVb, 0);
+    ctx->Draw(4, 0);
+}
+
+static void draw_ui(ID3D11DeviceContext* ctx)
+{
+    if (!list_visible()) return;
+
+    ctx->OMSetDepthStencilState(g_gpu.uiDepth, 0);
+    D3D11_VIEWPORT vp = { 0, 0, (float)g_width, (float)g_height, 0, 1 };
+    ctx->RSSetViewports(1, &vp);
+    UINT stride = sizeof(float) * 4, offs = 0;
+    ctx->IASetInputLayout(g_gpu.uiLayout);
+    ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+    ctx->IASetVertexBuffers(0, 1, &g_gpu.uiVb, &stride, &offs);
+    ctx->VSSetShader(g_gpu.uiVs, nullptr, 0);
+    ctx->VSSetConstantBuffers(0, 1, &g_gpu.uiCB);
+    ctx->PSSetShader(g_gpu.uiPs, nullptr, 0);
+    ctx->PSSetConstantBuffers(0, 1, &g_gpu.uiCB);
+    ctx->PSSetSamplers(0, 1, &g_gpu.sampler);
+
+    const float x0 = (float)(g_width - kPanelWidth);
+    const float bgTint[4] = { 0.114f, 0.121f, 0.135f, 1 };
+    draw_quad(ctx, x0, 0, (float)kPanelWidth, (float)g_height, 0, 0, 0, 0, bgTint);
+
+    for (size_t i = 0; i < g_list.size(); ++i) {
+        const ListItem& it = g_list[i];
+        float y = 8.0f + (float)i * kItemPitch - g_listScroll;
+        if (y + kThumbSize + kThumbLabel < 0 || y > (float)g_height) continue;
+        if (_wcsicmp(it.path.c_str(), g_activePath.c_str()) == 0) {
+            // The open file: a wide accent frame around its thumbnail.
+            const float accent[4] = { 0.26f, 0.56f, 1.0f, 1 };
+            draw_quad(ctx, x0 + 4, y - 2, (float)(kThumbSize + 8), (float)(kThumbSize + kThumbLabel + 8),
+                      0, 0, 0, 0, accent);
+        } else {
+            const float borderTint[4] = { 0.255f, 0.265f, 0.295f, 1 };
+            draw_quad(ctx, x0 + 6, y, (float)(kThumbSize + 4), (float)(kThumbSize + kThumbLabel + 4),
+                      0, 0, 0, 0, borderTint);
+        }
+        if (it.ready) {
+            const float white[4] = { 1, 1, 1, 1 };
+            ctx->PSSetShaderResources(0, 1, &it.thumb);
+            draw_quad(ctx, x0 + 8, y + 2, (float)kThumbSize, (float)(kThumbSize + kThumbLabel),
+                      0, 0, 1, 1, white);
+        } else {
+            const float placeholder[4] = { 0.185f, 0.195f, 0.215f, 1 };
+            ctx->PSSetShaderResources(0, 1, &g_gpu.whiteSrv);
+            draw_quad(ctx, x0 + 8, y + 2, (float)kThumbSize, (float)(kThumbSize + kThumbLabel),
+                      0, 0, 0, 0, placeholder);
+        }
+    }
+    ID3D11ShaderResourceView* nullSrv = nullptr;
+    ctx->PSSetShaderResources(0, 1, &nullSrv);
 }
 
 // WARP renders on the CPU, so its frame time grows with triangle count and window size. Shortly
@@ -798,7 +1144,8 @@ static void render()
 {
     if (!g_width || !g_height) return;
     if (g_frameWaitable) WaitForSingleObjectEx(g_frameWaitable, 50, FALSE);
-    draw_scene(g_rtv, g_dsv, g_width, g_height);
+    draw_scene(g_rtv, g_dsv, viewport_width(), g_height);
+    draw_ui(g_gpu.ctx);
     g_swapchain->Present(1, 0);
 }
 
@@ -820,11 +1167,19 @@ static void resize(UINT w, UINT h)
 
 static const UINT WM_APP_MESH_LOADED = WM_APP + 1;   // lParam: LoadResult* (owned by the receiver)
 static const UINT WM_APP_TEXTURE     = WM_APP + 2;   // wParam: generation, lParam: TextureResult*
+static const UINT WM_APP_PREVIEW     = WM_APP + 4;   // wParam: generation, lParam: PreviewResult*
 
 struct TextureResult
 {
     uint32_t index;
     Image    image;
+};
+
+// A parsed folder file, ready to become a thumbnail (happens on the UI thread).
+struct PreviewResult
+{
+    std::wstring path;
+    Mesh*        mesh;
 };
 
 // Decode textures in the background after the model is on screen; each finished image is sent
@@ -900,6 +1255,7 @@ static void create_texture(const TextureResult& r)
 struct LoadResult
 {
     std::wstring path;
+    uint32_t generation;
     Mesh mesh;
     Gpu  gpu;   // set when the model is too heavy for WARP and the window is on WARP
 };
@@ -920,9 +1276,16 @@ static void set_title(const wchar_t* path, const std::wstring& error)
 // after the first frame, via after_first_frame().
 static void show_mesh(const wchar_t* path, const Mesh& mesh)
 {
+    scan_folder(path);
     set_title(path, mesh.error);
     if (!mesh.error.empty()) return;
     upload_mesh(mesh);
+    // The open file's own thumbnail reuses this mesh: no second parse of a possibly huge file.
+    for (ListItem& it : g_list)
+        if (!it.ready && _wcsicmp(it.path.c_str(), path) == 0) {
+            render_thumbnail(it, mesh);
+            break;
+        }
     schedule_probe();
     g_yaw = 0.6f;
     g_pitch = 0.4f;
@@ -944,13 +1307,17 @@ static void after_first_frame(const std::wstring& path, Mesh&& mesh)
 
 // Loads a file on a worker thread and hands the result to the UI thread via WM_APP_MESH_LOADED.
 // If the window is on WARP and the model is too heavy for it, a GPU device is created alongside
-// (started early when the file size already suggests it) and the window switches to it.
+// (started early when the file size already suggests it) and the window switches to it. Each open
+// bumps a generation: results of opens that were superseded (arrow-key flipping) are dropped.
 static void open_async(const std::wstring& path)
 {
+    if (path == g_activePath) return;   // already showing (or loading) exactly this file
+    g_activePath = path;
+    uint32_t generation = ++g_openGeneration;
     SetWindowTextW(g_hwnd, (path + L" — loading…").c_str());
-    std::thread([path] {
+    std::thread([path, generation] {
         bool mayUpgrade = g_onWarp && renderer_override() != Renderer::Warp;
-        LoadResult* r = new LoadResult{ path };
+        LoadResult* r = new LoadResult{ path, generation };
         AsyncGpu gpu;
         if (mayUpgrade && estimate_triangles(path.c_str()) > warp_max_triangles() / 2) gpu.start(false);
         load_mesh(path.c_str(), r->mesh);
@@ -965,6 +1332,113 @@ static void open_async(const std::wstring& path)
     }).detach();
 }
 
+// ---------------------------------------------------------------------------
+// Folder scan and preview loading
+
+static std::mutex g_pqMutex;
+static std::condition_variable g_pqCv;
+static std::deque<std::pair<std::wstring, uint32_t>> g_pq;   // path + generation it was queued for
+static std::atomic<bool> g_previewWorkerStarted;
+
+// One worker loads folder files one at a time, so previews never steal the whole machine from the
+// file the user actually opened. Each finished parse is posted to the UI thread, which renders the
+// thumbnail. Preview meshes go through load_mesh() like everything else: the cache makes repeats
+// (clicking the item later) free.
+static void start_preview_worker()
+{
+    if (g_previewWorkerStarted.exchange(true)) return;
+    std::thread([] {
+        CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        for (;;) {
+            std::wstring path;
+            uint32_t generation = 0;
+            {
+                std::unique_lock<std::mutex> lock(g_pqMutex);
+                g_pqCv.wait(lock, [] { return !g_pq.empty(); });
+                path = std::move(g_pq.front().first);
+                generation = g_pq.front().second;
+                g_pq.pop_front();
+            }
+            if (generation != g_previewGeneration) continue;   // the list was rebuilt meanwhile
+            Mesh* mesh = new Mesh();
+            load_mesh(path.c_str(), *mesh);
+            PreviewResult* r = new PreviewResult{ std::move(path), mesh };
+            if (!PostMessageW(g_hwnd, WM_APP_PREVIEW, generation, (LPARAM)r)) {
+                delete mesh;
+                delete r;
+            }
+        }
+        CoUninitialize();
+    }).detach();
+}
+
+// Collects the model files next to `path` into the right panel. Cheap (a directory listing), runs
+// on the UI thread; the actual preview parsing is queued for the background worker.
+static void scan_folder(const wchar_t* path)
+{
+    std::wstring dir = path;
+    dir.resize(dir.find_last_of(L"\\/") + 1);
+    if (dir == g_listDir) return;   // same folder: keep the thumbnails loaded so far
+
+    g_previewGeneration++;
+    {
+        std::lock_guard<std::mutex> lock(g_pqMutex);
+        g_pq.clear();
+    }
+    for (ListItem& it : g_list) safe_release(it.thumb);
+    g_list.clear();
+    g_listDir = dir;
+    g_listScroll = 0;
+
+    WIN32_FIND_DATAW fd;
+    HANDLE find = FindFirstFileW((dir + L"*").c_str(), &fd);
+    if (find == INVALID_HANDLE_VALUE) return;
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        if (!is_model_path(fd.cFileName)) continue;
+        ListItem it;
+        it.path = dir + fd.cFileName;
+        it.name = fd.cFileName;
+        it.bytes = ((uint64_t)fd.nFileSizeHigh << 32) | fd.nFileSizeLow;
+        g_list.push_back(std::move(it));
+    } while (FindNextFileW(find, &fd));
+    FindClose(find);
+
+    std::sort(g_list.begin(), g_list.end(), [](const ListItem& a, const ListItem& b) {
+        return lstrcmpiW(a.name.c_str(), b.name.c_str()) < 0;
+    });
+
+    // Queue previews smallest-first: small models fill the list in quickly, heavy files last.
+    std::vector<const ListItem*> order;
+    for (const ListItem& it : g_list) order.push_back(&it);
+    std::sort(order.begin(), order.end(), [](const ListItem* a, const ListItem* b) { return a->bytes < b->bytes; });
+    {
+        std::lock_guard<std::mutex> lock(g_pqMutex);
+        for (const ListItem* it : order) g_pq.emplace_back(it->path, g_previewGeneration);
+    }
+    g_pqCv.notify_one();
+    start_preview_worker();
+}
+
+// Makes the list item at `i` the active model (no-op when it is already showing).
+static void select_item(size_t i)
+{
+    if (i >= g_list.size()) return;
+    scroll_into_view(i);
+    InvalidateRect(g_hwnd, nullptr, FALSE);
+    open_async(g_list[i].path);
+}
+
+// Flips through the list by keyboard: WASD and the arrows, with wrap-around.
+static void select_relative(int dir)
+{
+    if (g_list.empty()) return;
+    size_t i = 0;
+    for (size_t k = 0; k < g_list.size(); ++k)
+        if (_wcsicmp(g_list[k].path.c_str(), g_activePath.c_str()) == 0) { i = k; break; }
+    select_item((i + dir + g_list.size()) % g_list.size());
+}
+
 static void open_dropped(HDROP drop)
 {
     wchar_t file[MAX_PATH];
@@ -977,10 +1451,18 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
     case WM_LBUTTONDOWN:
+    {
+        int x = (short)LOWORD(lp);
+        if (x >= (int)viewport_width() && !g_list.empty()) {   // click in the file list
+            float y = (short)HIWORD(lp) + g_listScroll - 8.0f;
+            if (y >= 0) select_item((size_t)(y / kItemPitch));
+            return 0;
+        }
         g_dragging = true;
         g_lastMouse = { (short)LOWORD(lp), (short)HIWORD(lp) };
         SetCapture(hwnd);
         return 0;
+    }
     case WM_LBUTTONUP:
         g_dragging = false;
         ReleaseCapture();
@@ -999,12 +1481,25 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         return 0;
     case WM_MOUSEWHEEL:
-        g_dist *= std::pow(0.88f, GET_WHEEL_DELTA_WPARAM(wp) / 120.0f);
-        g_dist = std::fmax(g_radius * 0.05f, std::fmin(g_radius * 50.0f, g_dist));
+    {
+        // Over the file list the wheel scrolls it; over the model it zooms, as before.
+        POINT p = { (short)LOWORD(lp), (short)HIWORD(lp) };
+        ScreenToClient(hwnd, &p);
+        if (!g_list.empty() && p.x >= (int)viewport_width()) {
+            g_listScroll -= GET_WHEEL_DELTA_WPARAM(wp) / 120.0f * kItemPitch * 1.5f;
+            clamp_scroll();
+        } else {
+            g_dist *= std::pow(0.88f, GET_WHEEL_DELTA_WPARAM(wp) / 120.0f);
+            g_dist = std::fmax(g_radius * 0.05f, std::fmin(g_radius * 50.0f, g_dist));
+        }
         InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
+    }
     case WM_KEYDOWN:
         if (wp == VK_ESCAPE) DestroyWindow(hwnd);
+        // WASD and the arrows flip through the folder list; W/Up and A/Left go back.
+        else if (wp == 'W' || wp == 'A' || wp == VK_LEFT || wp == VK_UP) select_relative(-1);
+        else if (wp == 'S' || wp == 'D' || wp == VK_RIGHT || wp == VK_DOWN) select_relative(1);
         return 0;
     case WM_SIZE:
         resize(LOWORD(lp), HIWORD(lp));
@@ -1023,14 +1518,41 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     case WM_APP_MESH_LOADED: {
         LoadResult* r = (LoadResult*)lp;
+        if (r->generation != g_openGeneration) {   // superseded by a newer open (key flipping)
+            release_gpu(r->gpu);
+            delete r;
+            return 0;
+        }
         if (r->gpu.device) {
-            if (g_gpu.warp) activate_gpu(r->gpu);   // heavy model: switch from WARP to the GPU
-            else release_gpu(r->gpu);               // an earlier file already switched
+            if (g_gpu.warp) {   // heavy model: switch from WARP to the GPU, moving the list along
+                for (ListItem& it : g_list)
+                    if (it.thumb) {
+                        ID3D11ShaderResourceView* t = copy_texture(it.thumb, r->gpu.device);
+                        safe_release(it.thumb);
+                        it.thumb = t;
+                    }
+                activate_gpu(r->gpu);
+            } else release_gpu(r->gpu);          // an earlier file already switched
         }
         show_mesh(r->path.c_str(), r->mesh);
         after_first_frame(r->path, std::move(r->mesh));
         delete r;
         InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+    }
+    case WM_APP_PREVIEW: {
+        PreviewResult* r = (PreviewResult*)lp;
+        if (wp == g_previewGeneration) {
+            for (ListItem& it : g_list) {
+                if (!it.ready && _wcsicmp(it.path.c_str(), r->path.c_str()) == 0) {
+                    render_thumbnail(it, *r->mesh);
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    break;
+                }
+            }
+        }
+        delete r->mesh;
+        delete r;
         return 0;
     }
     case WM_TIMER:
@@ -1071,6 +1593,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
     int argc = 0;
     wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     const wchar_t* path = argc > 1 ? argv[1] : nullptr;
+    if (path) g_activePath = path;
 
     if ((!path && is_setup_exe()) || (path && !lstrcmpiW(path, L"--install"))) return run_install();
     if (path && !lstrcmpiW(path, L"--uninstall")) return run_uninstall();
@@ -1078,7 +1601,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
         bool reg = !lstrcmpiW(path, L"--register");
         bool ok = reg ? register_association(nullptr) : unregister_association();
         if (!ok) MessageBoxW(nullptr, L"Failed to write file association to the registry.", L"NoTime Fbx", MB_ICONERROR);
-        else if (!reg) MessageBoxW(nullptr, L".fbx association removed.", L"NoTime Fbx", MB_ICONINFORMATION);
+        else if (!reg) MessageBoxW(nullptr, L".fbx/.stl association removed.", L"NoTime Fbx", MB_ICONINFORMATION);
         return ok ? 0 : 1;
     }
 

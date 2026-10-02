@@ -48,3 +48,39 @@ float4 ps_main(VSOut i, bool front : SV_IsFrontFace) : SV_Target
     float  d = saturate(dot(n, lightDir));
     return float4(albedo.rgb * (0.3 + 0.7 * d), 1.0);
 }
+
+// Screen-space pass for the file list: quads in pixel coordinates, textured or tinted solid.
+
+cbuffer Ui : register(b0)
+{
+    float2 uiSize;    // backbuffer size in pixels
+    float2 _pad3;
+    float4 uiTint;
+};
+
+struct UiIn
+{
+    float2 pos : POSITION;   // pixels, y down
+    float2 uv  : TEXCOORD;
+};
+
+struct UiOut
+{
+    float4 pos    : SV_Position;
+    float2 uv     : TEXCOORD;
+    float4 tint   : COLOR0;
+};
+
+UiOut ui_vs_main(UiIn i)
+{
+    UiOut o;
+    o.pos  = float4(i.pos.x / uiSize.x * 2 - 1, 1 - i.pos.y / uiSize.y * 2, 0, 1);
+    o.uv   = i.uv;
+    o.tint = uiTint;
+    return o;
+}
+
+float4 ui_ps_main(UiOut i) : SV_Target
+{
+    return albedoTex.Sample(albedoSmp, i.uv) * i.tint;
+}
