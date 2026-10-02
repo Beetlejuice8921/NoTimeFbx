@@ -100,8 +100,9 @@ bool is_word(const char* w, size_t len, const char* keyword)
     return len == n && !_strnicmp(w, keyword, n);
 }
 
-// Parses vertices and facet normals. Returns false on a malformed number.
-bool parse_ascii(const char* p, const char* end, std::vector<Vertex>& verts)
+// Parses vertices and facet normals. Returns false on a malformed number. `inverted` receives one
+// flag per complete facet: whether its winding runs opposite to its stored normal.
+bool parse_ascii(const char* p, const char* end, std::vector<Vertex>& verts, std::vector<char>& inverted)
 {
     // Reserve for the facet count first so a large file doesn't grow the vector repeatedly.
     size_t facets = 0;
@@ -126,6 +127,12 @@ bool parse_ascii(const char* p, const char* end, std::vector<Vertex>& verts)
             Vec3 n = hasNormal ? y_up(normal) : Vec3{ 0, 0, 0 };
             if (hasNormal) n = normalize(n);
             verts.push_back({ y_up({ x, y, z }), hasNormal ? pack_normal(n) : zeroNormal, 0, 0 });
+            if (verts.size() % 3 == 0) {   // facet complete: winding vs stored normal
+                const Vertex* v = &verts[verts.size() - 3];
+                Vec3 cn = cross(v[1].pos - v[0].pos, v[2].pos - v[0].pos);   // already world space
+                inverted.push_back(hasNormal && dot(cn, cn) > 1e-20f &&
+                                   dot(normalize(y_up(normal)), cn) < 0);
+            }
         } else if (is_word(w, len, "facet")) {
             hasNormal = false;
         } else if (is_word(w, len, "normal")) {
@@ -142,7 +149,8 @@ bool parse_ascii(const char* p, const char* end, std::vector<Vertex>& verts)
 void load_ascii(const char* data, size_t size, Mesh& mesh, double t0)
 {
     std::vector<Vertex> verts;
-    if (!parse_ascii(data, data + size, verts)) {
+    std::vector<char> inverted;
+    if (!parse_ascii(data, data + size, verts, inverted)) {
         mesh.error = L"corrupt ASCII STL";
         return;
     }
@@ -169,7 +177,13 @@ void load_ascii(const char* data, size_t size, Mesh& mesh, double t0)
     mesh.vertices.resize(verts.size());
     if (verts.size()) memcpy(mesh.vertices.data(), verts.data(), verts.size() * sizeof(Vertex));
     mesh.indices.resize(verts.size());
-    for (size_t i = 0; i < verts.size(); ++i) mesh.indices[i] = (uint32_t)i;
+    for (size_t f = 0; f < verts.size() / 3; ++f) {   // inverted facets reverse winding, see load_binary
+        uint32_t b = (uint32_t)f * 3;
+        bool flip = f < inverted.size() && inverted[f];
+        mesh.indices[b] = flip ? b + 2 : b;
+        mesh.indices[b + 1] = b + 1;
+        mesh.indices[b + 2] = flip ? b : b + 2;
+    }
     if (verts.empty()) {
         mesh.error = L"no geometry in file";
         return;
@@ -215,16 +229,33 @@ void load_binary(const uint8_t* data, uint64_t tris, Mesh& mesh, double t0)
             // The fallback cross product follows the file's winding, so it is taken on the raw
             // corners and rotated once together with the stored normal below (the corners above
             // are already rotated; crossing them would give a world-space normal).
+            Vec3 e1 = { f[6] - f[3], f[7] - f[4], f[8] - f[5] };
+            Vec3 e2 = { f[9] - f[3], f[10] - f[4], f[11] - f[5] };
             Vec3 n = { f[0], f[1], f[2] };
-            if (dot(n, n) < 1e-20f)
-                n = cross({ f[6] - f[3], f[7] - f[4], f[8] - f[5] }, { f[9] - f[3], f[10] - f[4], f[11] - f[5] });
+            // Scans and converted files often carry facets whose winding runs opposite to their
+            // stored normal. The pixel shader flips back-face normals, which would render such a
+            // facet black; reversing its indices instead makes the rasterizer see it front-facing,
+            // so the stored normal is used as-is.
+            bool invert = false;
+            if (dot(n, n) > 1e-20f) {
+                invert = dot(n, cross(e1, e2)) < 0;
+            } else {
+                n = cross(e1, e2);
+            }
             uint32_t pn = pack_normal(normalize(y_up(n)));
             *v++ = { p0, pn, 0, 0 };
             *v++ = { p1, pn, 0, 0 };
             *v++ = { p2, pn, 0, 0 };
-            idx[0] = vi++;
-            idx[1] = vi++;
-            idx[2] = vi++;
+            if (invert) {
+                idx[0] = vi + 2;
+                idx[1] = vi + 1;
+                idx[2] = vi;
+            } else {
+                idx[0] = vi;
+                idx[1] = vi + 1;
+                idx[2] = vi + 2;
+            }
+            vi += 3;
             idx += 3;
             bmin = { std::fmin(bmin.x, p0.x), std::fmin(bmin.y, p0.y), std::fmin(bmin.z, p0.z) };
             bmax = { std::fmax(bmax.x, p0.x), std::fmax(bmax.y, p0.y), std::fmax(bmax.z, p0.z) };
