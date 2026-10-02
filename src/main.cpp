@@ -822,6 +822,9 @@ static void draw_scene(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* dsv,
     ctx->ClearRenderTargetView(rtv, clear);
     ctx->ClearDepthStencilView(dsv, D3D11_CLEAR_DEPTH, 1.0f, 0);
     ctx->OMSetRenderTargets(1, &rtv, dsv);
+    // The file-list pass disables depth testing; restore the default or far triangles would draw
+    // over near ones in file order.
+    ctx->OMSetDepthStencilState(nullptr, 0);
 
     D3D11_VIEWPORT vp = { 0, 0, (float)width, (float)height, 0, 1 };
     ctx->RSSetViewports(1, &vp);
