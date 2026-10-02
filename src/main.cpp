@@ -941,6 +941,7 @@ static void render_thumbnail(ListItem& it, const Mesh& mesh)
     ctx->ClearRenderTargetView(g_gpu.thumbRtv, clear);
     ctx->ClearDepthStencilView(g_gpu.thumbDsv, D3D11_CLEAR_DEPTH, 1.0f, 0);
     ctx->OMSetRenderTargets(1, &g_gpu.thumbRtv, g_gpu.thumbDsv);
+    ctx->OMSetDepthStencilState(nullptr, 0);   // draw_ui() may have left depth testing off
     D3D11_VIEWPORT vp = { 0, 0, (float)kThumbSize, (float)kThumbSize, 0, 1 };
     ctx->RSSetViewports(1, &vp);
     ctx->RSSetState(g_gpu.raster);
