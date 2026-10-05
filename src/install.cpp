@@ -22,7 +22,7 @@ bool unregister_association();
 namespace {
 
 const wchar_t kTitle[] = L"NoTime Fbx";
-const wchar_t kVersion[] = L"1.0";
+const wchar_t kVersion[] = L"1.1";
 const wchar_t kUninstallKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\NoTimeFbx";
 
 std::wstring known_folder(REFKNOWNFOLDERID id)

@@ -385,11 +385,13 @@ static uint32_t                               g_textureGeneration;   // bumps on
 
 // Orbit camera
 static const float kFovY = 0.8f;
-static Vec3  g_target{ 0, 0, 0 };
+static Vec3  g_target{ 0, 0, 0 };   // orbit point: starts at the model's center, moved by panning
+static Vec3  g_center{ 0, 0, 0 };   // center of the model's bounding box
 static Vec3  g_bmin{ 0, 0, 0 }, g_bmax{ 0, 0, 0 };
 static float g_radius = 1.0f;
 static float g_yaw = 0.6f, g_pitch = 0.4f, g_dist = 3.0f;
-static bool  g_dragging;
+enum class Drag { None, Orbit, Pan };
+static Drag  g_drag;
 static POINT g_lastMouse;
 
 static void fatal(const wchar_t* msg)
@@ -642,8 +644,8 @@ static void upload_mesh(const Mesh& mesh)
     g_textureCutout.assign(mesh.textures.size(), false);
 
     // Frame the model.
-    g_target = (mesh.bmin + mesh.bmax) * 0.5f;
-    g_radius = std::fmax(std::sqrt(dot(mesh.bmax - mesh.bmin, mesh.bmax - mesh.bmin)) * 0.5f, 1e-4f);
+    g_center = g_target = (mesh.bmin + mesh.bmax) * 0.5f;
+    g_radius =std::fmax(std::sqrt(dot(mesh.bmax - mesh.bmin, mesh.bmax - mesh.bmin)) * 0.5f, 1e-4f);
     g_bmin = mesh.bmin;
     g_bmax = mesh.bmax;
 }
@@ -672,6 +674,51 @@ static void fit_camera()
     g_dist = std::fmax(dist * 1.08f, g_radius * 0.05f);
 }
 
+static void camera_axes(Vec3& d, Vec3& right, Vec3& up)
+{
+    d = view_dir();
+    right = normalize(cross({ 0, 1, 0 }, d));
+    up = cross(d, right);
+}
+
+// World units covered by one pixel at the orbit point's depth.
+static float units_per_pixel()
+{
+    return 2.0f * g_dist * std::tan(kFovY * 0.5f) / (float)(g_height ? g_height : 1);
+}
+
+// Moves the orbit point across the screen plane so that the model follows the cursor.
+static void pan(int dx, int dy)
+{
+    Vec3 d, right, up;
+    camera_axes(d, right, up);
+    float k = units_per_pixel();
+    g_target = g_target - right * (dx * k) + up * (dy * k);
+}
+
+// Zooms towards the point under the cursor, taken on the plane through the orbit point facing the
+// camera: that point stays under the cursor, so a corner of a big scene can be zoomed into directly.
+static void zoom_at(int x, int y, float factor)
+{
+    float dist = std::fmax(g_radius * 0.002f, std::fmin(g_radius * 50.0f, g_dist * factor));
+    factor = dist / g_dist;
+    Vec3 d, right, up;
+    camera_axes(d, right, up);
+    float k = units_per_pixel();
+    Vec3 p = g_target + right * ((x - g_width * 0.5f) * k) - up * ((y - g_height * 0.5f) * k);
+    g_target = p + (g_target - p) * factor;
+    g_dist = dist;
+}
+
+// Back to the initial view of the whole model.
+static void reset_view()
+{
+    g_target = g_center;
+    g_yaw = 0.6f;
+    g_pitch = 0.4f;
+    fit_camera();
+}
+
 // Draws the model with the current camera into the given targets.
 static void draw_scene(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* dsv, UINT width, UINT height)
 {
@@ -679,8 +726,10 @@ static void draw_scene(ID3D11RenderTargetView* rtv, ID3D11DepthStencilView* dsv,
 
     Vec3 offset = view_dir();
     Vec3 eye = g_target + offset * g_dist;
-    float zn = std::fmax(g_dist - g_radius * 1.5f, g_dist * 0.01f);
-    float zf = g_dist + g_radius * 1.5f;
+    // Clip planes hug the model's bounding sphere, wherever panning has moved the orbit point.
+    float dc = std::sqrt(dot(g_center - eye, g_center - eye));
+    float zf = dc + g_radius * 1.05f;
+    float zn = std::fmax(dc - g_radius * 1.05f, zf * 0.0002f);
 
     FrameConstants fc;
     fc.viewProj = mul(perspective_rh(kFovY, (float)width / height, zn, zf), look_at_rh(eye, g_target, { 0, 1, 0 }));
@@ -924,9 +973,7 @@ static void show_mesh(const wchar_t* path, const Mesh& mesh)
     if (!mesh.error.empty()) return;
     upload_mesh(mesh);
     schedule_probe();
-    g_yaw = 0.6f;
-    g_pitch = 0.4f;
-    fit_camera();
+    reset_view();
 }
 
 // Background work once the model is on screen: stream textures in, and save the built mesh to the
@@ -976,35 +1023,55 @@ static void open_dropped(HDROP drop)
 static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
+    // Left button orbits; middle or right button pans (right for mice and touchpads without one).
     case WM_LBUTTONDOWN:
-        g_dragging = true;
+    case WM_MBUTTONDOWN:
+    case WM_RBUTTONDOWN:
+        g_drag = msg == WM_LBUTTONDOWN ? Drag::Orbit : Drag::Pan;
         g_lastMouse = { (short)LOWORD(lp), (short)HIWORD(lp) };
         SetCapture(hwnd);
         return 0;
     case WM_LBUTTONUP:
-        g_dragging = false;
+    case WM_MBUTTONUP:
+    case WM_RBUTTONUP:
+        g_drag = Drag::None;
         ReleaseCapture();
         return 0;
     case WM_CAPTURECHANGED:
-        g_dragging = false;
+        g_drag = Drag::None;
         return 0;
     case WM_MOUSEMOVE:
-        if (g_dragging) {
+        if (g_drag != Drag::None) {
             POINT p = { (short)LOWORD(lp), (short)HIWORD(lp) };
-            g_yaw   -= (p.x - g_lastMouse.x) * 0.008f;
-            g_pitch += (p.y - g_lastMouse.y) * 0.008f;
-            g_pitch = std::fmax(-1.55f, std::fmin(1.55f, g_pitch));
+            int dx = p.x - g_lastMouse.x, dy = p.y - g_lastMouse.y;
+            if (g_drag == Drag::Orbit) {
+                g_yaw   -= dx * 0.008f;
+                g_pitch += dy * 0.008f;
+                g_pitch = std::fmax(-1.55f, std::fmin(1.55f, g_pitch));
+            } else {
+                pan(dx, dy);
+            }
             g_lastMouse = p;
             InvalidateRect(hwnd, nullptr, FALSE);
         }
         return 0;
-    case WM_MOUSEWHEEL:
-        g_dist *= std::pow(0.88f, GET_WHEEL_DELTA_WPARAM(wp) / 120.0f);
-        g_dist = std::fmax(g_radius * 0.05f, std::fmin(g_radius * 50.0f, g_dist));
+    case WM_MOUSEWHEEL: {
+        POINT p = { (short)LOWORD(lp), (short)HIWORD(lp) };   // screen coordinates
+        ScreenToClient(hwnd, &p);
+        zoom_at(p.x, p.y, std::pow(0.88f, GET_WHEEL_DELTA_WPARAM(wp) / 120.0f));
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+    }
+    case WM_LBUTTONDBLCLK:
+        reset_view();
         InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
     case WM_KEYDOWN:
         if (wp == VK_ESCAPE) DestroyWindow(hwnd);
+        else if (wp == 'F' || wp == VK_HOME) {
+            reset_view();
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
         return 0;
     case WM_SIZE:
         resize(LOWORD(lp), HIWORD(lp));
@@ -1100,6 +1167,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
     WNDCLASSEXW wc = { sizeof(wc) };
+    wc.style = CS_DBLCLKS;   // double-click resets the view
     wc.lpfnWndProc = wnd_proc;
     wc.hInstance = inst;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);

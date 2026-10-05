@@ -5,7 +5,7 @@
 # NoTime Fbx
 
 A very fast FBX viewer for Windows. Double-click an `.fbx` and the model is on screen in about
-10–20 ms. You can rotate it and zoom, and that's all it does.
+10–20 ms. You can rotate, pan and zoom, and that's all it does.
 
 > Powered by **WARP**. Yes, like the warp drive: while other programs crawl towards your model at
 > sublight speed, NoTime Fbx simply bends space-time, and the model is already there.
@@ -30,15 +30,17 @@ Download `NoTimeFbx-setup.exe` from [Releases](../../releases) and run it. It in
 current user (no admin rights needed) into `%LOCALAPPDATA%\Programs\NoTimeFbx`, adds a Start menu
 shortcut and offers to open `.fbx` files with it. Uninstall from Settings → Apps.
 
-`NoTimeFbx-setup.exe` is the program itself: rename it to `NoTimeFbx.exe` and it runs as a plain
-viewer without installing.
+**Portable:** download `NoTimeFbx-portable.exe` instead and just run it — nothing is installed.
+Open a model by dropping it onto the window or with right-click → Open with.
 
 ## Controls
 
 | Action | How |
 |---|---|
 | Rotate | left mouse button |
-| Zoom | mouse wheel |
+| Pan | middle or right mouse button |
+| Zoom | mouse wheel, towards the cursor |
+| Reset the view | F or double-click |
 | Open another file | drop an `.fbx` onto the window |
 | Close | Esc |
 
