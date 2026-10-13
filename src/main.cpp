@@ -1,4 +1,4 @@
-// NoTimeFbx: minimal, fast-starting FBX/STL viewer. Rotate with LMB, zoom with wheel, Esc to quit.
+// NoTimeFbx: minimal, fast-starting FBX/STL/glTF viewer. Rotate with LMB, zoom with wheel, Esc to quit.
 //
 // Environment knobs, for diagnostics: NOTIMEFBX_TIMING=1 shows startup timings in the title,
 // NOTIMEFBX_LOG=1 writes %TEMP%\NoTimeFbx.log, NOTIMEFBX_NOCACHE=1 bypasses the mesh cache,
@@ -154,14 +154,16 @@ static Renderer renderer_override()
     return Renderer::Auto;
 }
 
-// Triangle count guess before loading, to start the right device early. Exact for cached meshes
-// and binary STL; otherwise from the file size. Bytes per triangle measured on real files: FBX
+// Triangle count guess before loading, to start the right device early. Exact for cached meshes,
+// binary STL and glTF (counted from its JSON); otherwise from the file size. Bytes per triangle measured on real files: FBX
 // binary 65-130, FBX ASCII 150-400, STL ASCII ~250. The low ends are used, so the guess errs on
 // the heavy side.
 static uint64_t estimate_triangles(const wchar_t* path)
 {
     uint64_t tris;
     if (cache_peek(path, tris)) return tris;
+    const wchar_t* ext = wcsrchr(path, L'.');
+    if (ext && (!_wcsicmp(ext, L".glb") || !_wcsicmp(ext, L".gltf")) && gltf_count_triangles(path, tris)) return tris;
 
     HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
     if (f == INVALID_HANDLE_VALUE) return 0;
@@ -1152,7 +1154,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int)
         bool reg = !lstrcmpiW(path, L"--register");
         bool ok = reg ? register_association(nullptr) : unregister_association();
         if (!ok) MessageBoxW(nullptr, L"Failed to write file association to the registry.", L"NoTime Fbx", MB_ICONERROR);
-        else if (!reg) MessageBoxW(nullptr, L".fbx/.stl association removed.", L"NoTime Fbx", MB_ICONINFORMATION);
+        else if (!reg) MessageBoxW(nullptr, L".fbx/.stl/.glb/.gltf association removed.", L"NoTime Fbx", MB_ICONINFORMATION);
         return ok ? 0 : 1;
     }
 

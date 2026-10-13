@@ -76,12 +76,18 @@ struct Mesh
     bool fromCache = false;
 };
 
-// loader.cpp. Safe to call from any thread. STL files are parsed by stl.cpp.
+// loader.cpp. Safe to call from any thread. STL files are parsed by stl.cpp, glTF by gltf.cpp.
 bool load_mesh(const wchar_t* path, Mesh& mesh);
 
 // stl.cpp. Binary or ASCII STL -> the same flat triangle list (no materials or textures, facet
 // normals, Z-up data rotated upright). `data` holds the whole file. Safe to call from any thread.
 bool load_stl(const void* data, size_t size, Mesh& mesh);
+
+// gltf.cpp. glTF 2.0, binary (.glb, `data` holds the whole file) or JSON (.gltf, with external or
+// embedded buffers; `path` locates them and external images). Safe to call from any thread.
+bool load_gltf(const wchar_t* path, const void* data, size_t size, Mesh& mesh);
+// Triangle count of a .glb/.gltf from its JSON alone, without touching the geometry.
+bool gltf_count_triangles(const wchar_t* path, uint64_t& triangles);
 
 // cache.cpp. cache_load() is used by load_mesh(); cache_store() is slow (writes the whole mesh to
 // disk) and is meant for a background thread once the model is displayed. Both are thread-safe.

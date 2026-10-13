@@ -1,4 +1,4 @@
-// .fbx and .stl file associations (per-user, no admin rights needed).
+// .fbx, .stl, .glb and .gltf file associations (per-user, no admin rights needed).
 //
 // Windows 10+ does not allow an app to silently make itself the default handler (UserChoice is
 // hash-protected), so --register writes the ProgID/capabilities and then shows the system
@@ -28,6 +28,8 @@ static const struct
 } kFormats[] = {
     { L".fbx", L"NoTimeFbx.fbx", L"FBX model" },
     { L".stl", L"NoTimeFbx.stl", L"STL model" },
+    { L".glb", L"NoTimeFbx.glb", L"glTF binary model" },
+    { L".gltf", L"NoTimeFbx.gltf", L"glTF model" },
 };
 
 static bool set_value(const wchar_t* subkey, const wchar_t* name, const wchar_t* data, DWORD type = REG_SZ)
@@ -69,7 +71,7 @@ bool register_association(const wchar_t* exePath)
     ok &= set_value(L"Software\\Classes\\Applications\\NoTimeFbx.exe\\shell\\open\\command", nullptr, cmd);
     // Show up in Settings > Default apps
     ok &= set_value(kCapsPath, L"ApplicationName", L"NoTime Fbx");
-    ok &= set_value(kCapsPath, L"ApplicationDescription", L"Fast FBX and STL model viewer");
+    ok &= set_value(kCapsPath, L"ApplicationDescription", L"Fast FBX, STL and glTF model viewer");
     ok &= set_value(L"Software\\RegisteredApplications", L"NoTimeFbx", kCapsPath);
 
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);

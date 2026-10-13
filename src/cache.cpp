@@ -19,7 +19,7 @@
 namespace {
 
 const uint32_t kVersion = 1 + (uint32_t)sizeof(Vertex) * 1000;   // bump when the layout changes
-const uint64_t kMinSourceBytes = 8ull << 20;                     // small files load fast anyway
+const uint64_t kMinSourceBytes = 8ull << 20;                     // see worth_caching()
 const uint64_t kMaxCacheBytes = 2ull << 30;
 
 struct Header
@@ -139,12 +139,21 @@ void trim_cache(const std::wstring& dir)
     }
 }
 
+// Small files load fast anyway, and glTF holds ready vertex arrays that load about as fast as a
+// cache entry would (1.5M triangles: 22 ms vs 18 ms), so a copy would only take disk space.
+bool worth_caching(const wchar_t* path, uint64_t srcSize)
+{
+    const wchar_t* ext = wcsrchr(path, L'.');
+    bool gltf = ext && (!_wcsicmp(ext, L".glb") || !_wcsicmp(ext, L".gltf"));
+    return srcSize >= kMinSourceBytes && !gltf;
+}
+
 // Opens the cache entry for `path` and reads its header; false unless the entry is valid for the
 // current source file. Readers share delete access so that a concurrent cache_store() can replace it.
 bool open_entry(const wchar_t* path, DWORD access, File& f, Header& hdr)
 {
     uint64_t srcSize, srcTime;
-    if (disabled() || !source_info(path, srcSize, srcTime) || srcSize < kMinSourceBytes) return false;
+    if (disabled() || !source_info(path, srcSize, srcTime) || !worth_caching(path, srcSize)) return false;
     std::wstring name = cache_file(path);
     if (name.empty()) return false;
 
@@ -226,7 +235,7 @@ void cache_store(const wchar_t* path, const Mesh& mesh)
 {
     uint64_t srcSize, srcTime;
     if (disabled() || mesh.fromCache || !mesh.error.empty() || !source_info(path, srcSize, srcTime) ||
-        srcSize < kMinSourceBytes)
+        !worth_caching(path, srcSize))
         return;
     std::wstring name = cache_file(path);
     if (name.empty()) return;

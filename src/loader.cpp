@@ -162,6 +162,7 @@ bool load_mesh(const wchar_t* path, Mesh& mesh)
 
     const wchar_t* ext = wcsrchr(path, L'.');
     if (ext && !_wcsicmp(ext, L".stl")) return load_stl(file.data, file.size, mesh);
+    if (ext && (!_wcsicmp(ext, L".glb") || !_wcsicmp(ext, L".gltf"))) return load_gltf(path, file.data, file.size, mesh);
 
     ufbx_load_opts opts = {};
     opts.ignore_animation = true;
